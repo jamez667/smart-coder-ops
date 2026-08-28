@@ -86,10 +86,16 @@ services:
         - "Content-Type: application/json"
         - "-d"
         - '{"prompt":"ping","n_predict":1,"cache_prompt":true}'
-      interval: 10s
-      timeout: 8s
-      retries: 2
-      start_period: 120s
+      # The probe shares the ONE slot with real work (-np 1), so while a long agent
+      # prompt is being processed it simply queues -- it is not evidence of a wedged
+      # server. An 8s timeout with 2 retries meant a busy server was declared
+      # unhealthy and RESTARTED BY autoheal mid-request, which reaches the client as
+      # "Peer disconnected" and looks like a network fault. Measured: four restarts
+      # across one afternoon's evals, every one of them a false positive.
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 180s
     deploy:
       resources:
         reservations:
@@ -214,10 +220,16 @@ services:
         - "Content-Type: application/json"
         - "-d"
         - '{"prompt":"ping","n_predict":1,"cache_prompt":true}'
-      interval: 10s
-      timeout: 8s
-      retries: 2
-      start_period: 120s
+      # The probe shares the ONE slot with real work (-np 1), so while a long agent
+      # prompt is being processed it simply queues -- it is not evidence of a wedged
+      # server. An 8s timeout with 2 retries meant a busy server was declared
+      # unhealthy and RESTARTED BY autoheal mid-request, which reaches the client as
+      # "Peer disconnected" and looks like a network fault. Measured: four restarts
+      # across one afternoon's evals, every one of them a false positive.
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 180s
     deploy:
       resources:
         reservations:
