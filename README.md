@@ -20,9 +20,10 @@ them over HTTP (OpenAI-compatible API); it has no knowledge of this file.
 |--------|---------|----------|
 | `sc-coder30b` (`coder30b`) | `qwen3-coder-30b-a3b` MoE, split across both GPUs (`--tensor-split 12,8`) — the daily driver | `:11435` |
 | `sc-qwen8b-pool` / `-pool2` (`pool8b`) | Two Qwen3-8B pools (one per GPU, `-np` slots) — the parallel MCP swarm fallback | `:11439`, `:11440` |
+| `sc-tiel30b` (`tiel30b`) | `Tiel-Coder-35B-A3B` (`qwen35moe`) IQ4_XS, split across both GPUs — the 30B's replacement candidate | `:11436` |
 
-Nothing starts without a **profile**. The 30B and the 8B swarm compete for the
-same VRAM — run one profile or the other, never both.
+Nothing starts without a **profile**. All three backends compete for the same
+VRAM — run exactly one profile at a time, never two.
 
 ```powershell
 # 30B daily driver — --wait blocks until the model is loaded and serving
@@ -32,7 +33,24 @@ docker compose --profile coder30b down
 # Both 8B pools (5 concurrent agents total)
 docker compose --profile pool8b up --build --wait
 docker compose --profile pool8b down
+
+# Tiel-Coder-35B — same A3B shape as the 30B, on :11436
+docker compose --profile tiel30b up --build --wait
+docker compose --profile tiel30b down
 ```
+
+**Quant choice on this rig matters.** ~21.4GB free across both cards with the
+desktop idle: Tiel's `IQ4_XS` (16.9GB) fits, `Q4_K_S` (19.9GB) does not. The
+model card's SWE-bench-Live 12/25 was measured on the 22.4GB `Q4_K_XL`, which
+this box cannot hold — treat that number as an upper bound, not a prediction.
+
+**Close games before starting `tiel30b`.** Measured on an idle desktop it runs
+**117 tok/s** eval / 268 tok/s prompt (11.5GB Ti + 7.3GB 3080) — comfortably
+matching the 30B. With Space Engineers up, the weights overflow to host RAM and
+every token crosses the PCIe-4x link: **1.8 tok/s**, a 66x cliff with no graceful
+middle ground. The 30B (`q3_k_m`, 14GB) has the slack to share a card; this does
+not. If a game was running when the container started, restart it afterwards —
+llama.cpp will not re-place the weights on its own.
 
 `--wait` returns when the in-container healthcheck passes (curl hits `/v1/models`),
 i.e. the moment the model finishes loading — no host-side polling. `--build` is a

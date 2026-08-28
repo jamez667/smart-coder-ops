@@ -4,13 +4,14 @@
 # self-report readiness via a native healthcheck that polls /v1/models.
 #
 # Nothing starts by default — every service is gated behind a PROFILE. This enforces
-# the VRAM constraint: the 30B and the 8B swarm compete for the same cards, so you
-# run ONE profile or the OTHER, never both.
+# the VRAM constraint: the 30B, the 35B and the 8B swarm all compete for the same
+# cards, so you run exactly ONE profile at a time, never two.
 #
 #   docker compose --profile coder30b up --build --wait   # bring the 30B up, block till serving
 #   docker compose --profile coder30b down                # tear it down
 #   docker compose --profile pool8b   up --build --wait   # bring BOTH 8B pools up
 #   docker compose --profile pool8b   down                # tear both down
+#   docker compose --profile tiel30b  up --build --wait   # Tiel-Coder-35B instead of the 30B
 #
 # `--wait` blocks until the healthcheck passes (model loaded + serving) — the READY
 # signal the old host-side poll loops printed. `--build` is a ~5s no-op once cached.
@@ -95,7 +96,7 @@ services:
   sc-autoheal:
     image: willfarrell/autoheal:latest
     container_name: sc-autoheal
-    profiles: ["coder30b"]
+    profiles: ["coder30b", "tiel30b"]
     restart: unless-stopped
     environment:
       - AUTOHEAL_CONTAINER_LABEL=autoheal   # only watch containers we opt in
@@ -148,4 +149,71 @@ services:
           devices:
             - driver: nvidia
               count: all       # both exposed; CUDA_VISIBLE_DEVICES pins to GPU 1
+              capabilities: [gpu]
+
+  # Tiel-Coder-35B-A3B — a Tiel finetune of Ornith-1.5-35B-A3B (qwen35moe: MoE +
+  # hybrid SSM layers). Same A3B shape as the 30B daily driver — 35B total / ~3B
+  # active, 256 experts, 8 used — so the same both-GPU split logic applies and
+  # little crosses the slow PCIe-4x link.
+  #
+  #   IQ4_XS (16.9GB) NOT Q4_K_S (19.9GB): the rig has ~20.2GB free across both
+  #                        cards, and KV at 32k costs ~3.3GB. Q4_K_S does not fit
+  #                        at any useful context; IQ4_XS leaves headroom. Note the
+  #                        model card's SWE-bench-Live 12/25 was measured on the
+  #                        22.4GB Q4_K_XL, which this rig cannot hold at all —
+  #                        expect to land under that number.
+  #   --tensor-split 12,8  same measured ratio as the 30B: pack the FAST card
+  #                        (3080Ti/16x). Counterintuitive but measured — see above.
+  #   -c 32768 -np 1       the GGUF advertises 262144, but KV scales with it and
+  #                        there is no room. -np 1 because this is a single-agent
+  #                        coder backend (kv_unified means the slots share one
+  #                        cache, so this is tidiness, not a VRAM saving).
+  #
+  #   MEASURED 117 tok/s eval / 268 tok/s prompt, split 11.5GB Ti + 7.3GB 3080.
+  #   BUT: at 16.9GB this needs the Ti nearly empty. With a game running (Space
+  #   Engineers, ~1.2GB + desktop) the weights overflow to host and every token
+  #   crosses the PCIe-4x link — measured 1.8 tok/s, a 66x cliff. There is no
+  #   graceful degradation here, it just falls off. The 30B (q3_k_m, 14GB) has
+  #   the slack to coexist with a game; this does not. Close the game first, and
+  #   restart the container afterwards — it will not re-place weights on its own.
+  #   --no-mmap            as the 30B: keep the weights out of host page cache.
+  #
+  # Needs llama.cpp >= the qwen35moe merge; the pinned server-cuda image is b10015
+  # and has it (`grep -ao qwen35moe /app/libllama.so`). If the arch ever fails to
+  # load, pull the image before suspecting the GGUF.
+  sc-tiel30b:
+    <<: *llama-common
+    container_name: sc-tiel30b
+    profiles: ["tiel30b"]
+    ports: ["11436:8080"]
+    command: >
+      -m /models/Tiel-Coder-35B-A3B-UD-IQ4_XS.gguf
+      -ngl 99 --tensor-split 12,8 -c 32768 -np 1 --no-mmap --cont-batching --jinja
+      --host 0.0.0.0 --port 8080 --alias tiel-coder-35b
+    restart: unless-stopped
+    labels:
+      - autoheal=true          # sc-autoheal watches this too (start it alongside)
+    # Same real-inference probe as the 30B: /v1/models answers even when wedged.
+    healthcheck:
+      test:
+        - "CMD"
+        - "curl"
+        - "-fsS"
+        - "-X"
+        - "POST"
+        - "http://localhost:8080/completion"
+        - "-H"
+        - "Content-Type: application/json"
+        - "-d"
+        - '{"prompt":"ping","n_predict":1,"cache_prompt":true}'
+      interval: 10s
+      timeout: 8s
+      retries: 2
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all       # both cards; -ts splits weights across them
               capabilities: [gpu]
