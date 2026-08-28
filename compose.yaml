@@ -45,8 +45,16 @@ services:
   # the single-card 8B despite the split.
   #   --tensor-split 12,8  pack the FAST card (3080Ti/16x); speed scales with weight on
   #                        it (12,8 => ~112 tok/s; 8,6 => 76). Counterintuitive, measured.
-  #   -c 32768             native trained context (NO YaRN penalty); KV pre-allocated at
+  #   -c 32768 -np 1       native trained context (NO YaRN penalty); KV pre-allocated at
   #                        load, ~3.3GB (MoE+GQA → small). Expect ~11.6GB Ti + ~7GB 3080.
+  #                        -np 1 because --cont-batching otherwise defaults to FOUR
+  #                        slots. A single-agent client only ever uses one, and the
+  #                        other three still hold KV: under a long prompt the server
+  #                        thrashed its prompt cache ("making room for prompt cache
+  #                        entry, removing oldest entry" at 585-758MiB a time) and then
+  #                        exited cleanly mid-request, which reaches the client as
+  #                        "Peer disconnected". Raise it only for the swarm, alongside
+  #                        a lower -c.
   #   --no-mmap            all weights go to VRAM (-ngl 99), so DON'T also keep the 14GB
   #                        GGUF memory-mapped in host RAM — mmap'd, it shows as ~14GB of
   #                        (reclaimable) page cache that reads as "RAM full" on Windows.
@@ -59,7 +67,7 @@ services:
     ports: ["11435:8080"]
     command: >
       -m /models/qwen3-coder-30b-a3b-instruct-q3_k_m.gguf
-      -ngl 99 --tensor-split 12,8 -c 32768 --no-mmap --cont-batching --jinja
+      -ngl 99 --tensor-split 12,8 -c 32768 -np 1 --no-mmap --cont-batching --jinja
       --host 0.0.0.0 --port 8080 --alias qwen3-coder-30b
     restart: unless-stopped
     labels:
