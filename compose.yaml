@@ -176,7 +176,16 @@ services:
   #                        model card's SWE-bench-Live 12/25 was measured on the
   #                        22.4GB Q4_K_XL, which this rig cannot hold at all —
   #                        expect to land under that number.
-  #   --tensor-split 12,8  same measured ratio as the 30B: pack the FAST card
+  #   --tensor-split 10,10 NOT 12,8 like the 30B. This model is 16.9GB against the 30B's
+  #                        14GB, and the Ti is also the DESKTOP card -- Edge, Teams,
+  #                        Docker Desktop and friends take ~1.2GB. At 12,8 that left
+  #                        73-100MB free on the Ti even with no game running, and a long
+  #                        agent prompt stalled the server: five consecutive 60s health
+  #                        probes failed and autoheal restarted it THREE times mid-run,
+  #                        which reached the client as timeouts and "Peer disconnected"
+  #                        and cost 8 of 12 instances. Moving weight to the 3080 (2.7GB
+  #                        spare) buys the headroom back. Packing the fast card is still
+  #                        the throughput win when the Ti is free -- see the 30B
   #                        (3080Ti/16x). Counterintuitive but measured — see above.
   #   -c 32768 -np 1       the GGUF advertises 262144, but KV scales with it and
   #                        there is no room. -np 1 because this is a single-agent
@@ -202,7 +211,7 @@ services:
     ports: ["11436:8080"]
     command: >
       -m /models/Tiel-Coder-35B-A3B-UD-IQ4_XS.gguf
-      -ngl 99 --tensor-split 12,8 -c 32768 -np 1 --no-mmap --cont-batching --jinja
+      -ngl 99 --tensor-split 10,10 -c 32768 -np 1 --no-mmap --cont-batching --jinja
       --host 0.0.0.0 --port 8080 --alias tiel-coder-35b
     restart: unless-stopped
     labels:
