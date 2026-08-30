@@ -73,6 +73,39 @@ SC_BASE_URLS=http://host.docker.internal:11439/v1,http://host.docker.internal:11
 > `CUDA_VISIBLE_DEVICES`. Verify GPU passthrough on your Docker Desktop / WSL2 setup
 > the first time — `nvidia-smi` inside the container, or just watch the load succeed.
 
+### `scripts/set-power-limits.ps1` — GPU power caps
+
+Pins GPU0 (3080 Ti) at its stock 350W and GPU1 (3080) at **200W**, well under its
+380W stock. `nvidia-smi` power limits are runtime-only and are wiped by every reboot,
+so this is registered as a startup task:
+
+```powershell
+schtasks /query /tn "sc-gpu-power"        # elevated
+```
+
+**Why the 3080 is capped.** It died mid-run on 2026-08-29 — NVML reported "GPU is
+lost" while Windows still had the device enumerated and healthy, and llama.cpp exited
+128 with no Xid, no CUDA error, no driver event. Core temperature was 75C, which is
+unremarkable on air but high on water.
+
+Two things make that card the weak point, and neither is the harness:
+
+- **It is last in the coolant loop** (pump → CPU → 3080 Ti → 3080 → reservoir), so it
+  receives water that has already absorbed the CPU's and the Ti's heat.
+- **Its thermal pads are original**, from purchase. The Ti was repasted a month ago.
+  Pads dry out and lose contact long before paste does, and on a 3080 the pads are
+  what cool the GDDR6X — paste only cools the die. A memory fault presents exactly as
+  observed: unresponsive, still on the bus, core temperature unremarkable.
+
+Confirm under load with:
+
+```powershell
+nvidia-smi --query-gpu=index,temperature.gpu,temperature.memory --format=csv
+```
+
+Memory junction near 100C while the core reads 75 means pads/loop, not software.
+Raise the cap back toward 300W once several full eval runs complete without a loss.
+
 ### `docker/llama/` — the healthcheck-capable llama.cpp image
 
 Three lines: `FROM` the stock llama.cpp server image + `apt-get install curl`, so
